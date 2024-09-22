@@ -1,0 +1,5 @@
+mysql==0.0.3
+telebot==0.0.5
+flask==3.0.0
+pandas==2.0.3
+SQLAlchemy==2.0.32
