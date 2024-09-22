@@ -52,7 +52,7 @@ if IS_LOCAL:
 TOKEN = os.environ.get("TOKEN")
 bot = TeleBot(TOKEN)
 logger.setLevel(logging.DEBUG)
-url = os.environ.get("URL") or ""
+url = "https://martirolog-89a3aa406540.herokuapp.com/"
 img_url = "http://files.ekmemorial.org/martirolog/"
 map_url = img_url + "karty/sector-all.png"
 
