@@ -108,6 +108,7 @@ def send_schema(message: types.Message):
 @bot.inline_handler(func=lambda query: len(query.query) > 0)
 def find_by_fio(query):
     try:
+        text = query.query
         people = find_by_name(text)[:5]
         lines = [f'{row["FIO"]}\n' for row in people]
         results = []
