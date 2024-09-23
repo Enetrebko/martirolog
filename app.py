@@ -2,6 +2,7 @@ import logging
 import mysql.connector
 from mysql.connector import Error
 from telebot import TeleBot, types, logger
+from telebot.util import content_type_media, content_type_service
 
 import os
 from flask import Flask, request
@@ -105,10 +106,12 @@ def find_people(message: types.Message):
 def send_schema(message: types.Message):
     bot.send_message(message.chat.id, text = f"<a href='{map_url}'>Схема комплекса</a>", parse_mode='html')
 
-@bot.inline_handler(func=lambda query: len(query.query) > 0)
+@bot.inline_handler(func=lambda query: True)
 def find_by_fio(query):
     try:
         text = query.query
+        if len(text) < 1:
+            return
         people = find_by_name(text)[:5]
         lines = [f'{row["FIO"]}\n' for row in people]
         results = []
@@ -174,6 +177,14 @@ def send_person_details(message):
         response = f"An error occurred: {e}"
 
     bot.send_message(message.chat.id, response, parse_mode='html', disable_web_page_preview=True)
+
+@bot.callback_query_handler(func=lambda call: True)
+def unknown_callback(call) -> None:
+    logger.info("Unknown callback %s", call.data)
+
+@bot.message_handler(content_types=content_type_media + content_type_service)
+def log_all(message) -> None:
+    logger.info("Unknown content type %s", message.content_type)
 
 
 def run_local():
