@@ -93,7 +93,7 @@ def start(message: types.Message):
 
 def find_fio_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    switch_button = types.InlineKeyboardButton(text="Начать", switch_inline_query_current_chat="ФИО: ")
+    switch_button = types.InlineKeyboardButton(text="Начать", switch_inline_query_current_chat="")
     keyboard.add(switch_button)
     return keyboard
 
@@ -105,12 +105,9 @@ def find_people(message: types.Message):
 def send_schema(message: types.Message):
     bot.send_message(message.chat.id, text = f"<a href='{map_url}'>Схема комплекса</a>", parse_mode='html')
 
-@bot.inline_handler(func=lambda query: True)
+@bot.inline_handler(func=lambda query: len(query.query) > 0)
 def find_by_fio(query):
     try:
-        text = query.query.replace('ФИО: ', '')
-        if len(text) < 1:
-            return
         people = find_by_name(text)[:5]
         lines = [f'{row["FIO"]}\n' for row in people]
         results = []
