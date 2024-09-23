@@ -39,7 +39,7 @@ no_stele_text = """
 
 app = Flask(__name__)
 
-IS_LOCAL = False
+IS_LOCAL = True
 
 if IS_LOCAL:
     env = ".env_local"
@@ -109,6 +109,8 @@ def send_schema(message: types.Message):
 def find_by_fio(query):
     try:
         text = query.query.replace('ФИО: ', '')
+        if len(text) < 1:
+            return
         people = find_by_name(text)[:5]
         lines = [f'{row["FIO"]}\n' for row in people]
         results = []
