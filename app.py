@@ -41,7 +41,7 @@ app = Flask(__name__)
 
 IS_LOCAL = os.environ.get("IS_LOCAL") or True
 
-if IS_LOCAL:
+if IS_LOCAL == True:
     env = ".env_local"
     with open(env) as f:
         for l in f.readlines():
