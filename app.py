@@ -39,7 +39,7 @@ no_stele_text = """
 
 app = Flask(__name__)
 
-IS_LOCAL = False
+IS_LOCAL = os.environ.get("IS_LOCAL") or True
 
 if IS_LOCAL:
     env = ".env_local"
