@@ -113,7 +113,7 @@ def find_by_fio(query):
         if len(text) < 1:
             return
         people = find_by_name(text)[:6]
-        lines = [f'{row["FIO"]}\n' for row in people]
+        lines = [row["FIO"] for row in people]
         results = []
         for index, line in enumerate(lines):
             results.append(
