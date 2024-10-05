@@ -74,7 +74,7 @@ def find_by_name(name):
 
         if connection.is_connected():
             cursor = connection.cursor(dictionary=True)
-            cursor.execute(f"SELECT * FROM {db_name}.{table_name} WHERE LOWER(FIO) LIKE '{name.lower()}%'")
+            cursor.execute(f"SELECT * FROM {db_name}.{table_name} WHERE LOWER(FIO) LIKE '{name.lower()}%' ORDER BY FIO")
             results = cursor.fetchall()
 
     except Error as e:
@@ -112,7 +112,7 @@ def find_by_fio(query):
         text = query.query
         if len(text) < 1:
             return
-        people = find_by_name(text)[:5]
+        people = find_by_name(text)[:6]
         lines = [f'{row["FIO"]}\n' for row in people]
         results = []
         for index, line in enumerate(lines):
@@ -138,7 +138,9 @@ def send_person_details(message):
         if not details:
             response = "Извините, мы никого не нашли с такой фамилмей"
         elif len(details) > 6:
-            response = "По вашему запросу найдено больше шести человек, пожалуйста уточните запрос"
+            response = """
+            По вашему запросу найдено больше шести человек, пожалуйста, уточните фамилию или добавьте инициалы, например "Иванов И.И."
+            """
         else:
             response = ""
             for detail in details:
@@ -181,6 +183,15 @@ def send_person_details(message):
 @bot.callback_query_handler(func=lambda call: True)
 def unknown_callback(call) -> None:
     logger.info("Unknown callback %s", call.data)
+
+# def bot_callback(request):
+#     logger.info("Bot callback: %s", request.body.decode("UTF-8"))
+#
+#     json_str = request.body.decode("UTF-8")
+#     update = types.Update.de_json(json_str)
+#     bot.process_new_updates([update])
+#
+#     return JsonResponse({"code": 200})
 
 @bot.message_handler(content_types=content_type_media + content_type_service)
 def log_all(message) -> None:
