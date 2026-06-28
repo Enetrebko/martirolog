@@ -2,7 +2,7 @@ name: Deploy to Droplet
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 # Prevent overlapping deploys if you push twice quickly
 concurrency:
