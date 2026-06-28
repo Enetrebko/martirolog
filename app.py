@@ -40,20 +40,31 @@ no_stele_text = """
 
 app = Flask(__name__)
 
-IS_LOCAL = os.environ.get("IS_LOCAL") or True
+def env_bool(name: str, default: bool = False) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
 
-if IS_LOCAL is True:
-    env = ".env_local"
-    with open(env) as f:
-        for l in f.readlines():
-            if '=' in l:
-                os.environ[l.split('=')[0].strip()] = l.split('=')[1].strip()
+# Decide which env file to load BEFORE reading other vars.
+# IS_DEV controls which file; default to production (safer).
+IS_DEV = env_bool("IS_DEV", default=False)
 
+if IS_DEV:
+    env_file = ".env_local"
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+POLLING_MODE = env_bool("POLLING_MODE", default=IS_DEV)
 
 TOKEN = os.environ.get("TOKEN")
 bot = TeleBot(TOKEN)
 logger.setLevel(logging.DEBUG)
-url = "https://martirolog-89a3aa406540.herokuapp.com/"
+url = os.environ.get("WEBHOOK_URL", "https://martirolog-89a3aa406540.herokuapp.com/")
 img_url = "http://46.101.97.212:8090/martirolog_new/"
 map_url = img_url + "karty/sector-all.png"
 
@@ -217,7 +228,7 @@ def webhook():
 
 
 if __name__ == "__main__":
-    if IS_LOCAL:
+    if POLLING_MODE:
         run_local()
     else:
         app.run(threaded=True, host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))

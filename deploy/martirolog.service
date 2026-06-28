@@ -1,0 +1,14 @@
+[Unit]
+Description=Martirolog Telegram Bot
+After=network.target mysql.service
+
+[Service]
+User=root
+WorkingDirectory=/opt/martirolog
+EnvironmentFile=/etc/martirolog/env
+ExecStart=/opt/martirolog/venv/bin/python app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
