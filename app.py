@@ -54,7 +54,7 @@ TOKEN = os.environ.get("TOKEN")
 bot = TeleBot(TOKEN)
 logger.setLevel(logging.DEBUG)
 url = "https://martirolog-89a3aa406540.herokuapp.com/"
-img_url = "http://files.ekmemorial.org/martirolog/"
+img_url = "http://46.101.97.212:8090/martirolog_new/"
 map_url = img_url + "karty/sector-all.png"
 
 
