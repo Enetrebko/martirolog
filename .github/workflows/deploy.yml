@@ -25,11 +25,12 @@ jobs:
             cd /opt/martirolog
             git pull origin master
             ./venv/bin/pip install -r requirements.txt
-            # Sync the unit file from the repo, reload if it changed
-            if ! cmp -s martirolog.service /etc/systemd/system/martirolog.service; then
-              cp martirolog.service /etc/systemd/system/martirolog.service
+            # Sync the unit file from the repo, reload only if it changed
+            if ! cmp -s deploy/martirolog.service /etc/systemd/system/martirolog.service; then
+              cp deploy/martirolog.service /etc/systemd/system/martirolog.service
               systemctl daemon-reload
             fi
             systemctl restart martirolog
+            # Give it a moment, then verify it actually came back up
             sleep 3
-            systemctl is-active --quiet martirolog || (journalctl -u martirolog -n 30 --no-pager; exit 1)
+            systemctl is-active --quiet martirolog && echo "Service is running" || (echo "Service failed to start"; journalctl -u martirolog -n 30 --no-pager; exit 1)
