@@ -88,8 +88,8 @@ def find_by_name(name):
 @bot.message_handler(commands=['start'])
 def start(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-    keyboard.add(types.InlineKeyboardButton(text='Поиск с подсказками'))
-    keyboard.add(types.InlineKeyboardButton(text='Схема комплекса'))
+    keyboard.add(types.KeyboardButton(text='Поиск с подсказками'))
+    keyboard.add(types.KeyboardButton(text='Схема комплекса'))
     bot.send_message(message.chat.id, start_text, parse_mode='html', reply_markup=keyboard)
 
 def find_fio_keyboard():
