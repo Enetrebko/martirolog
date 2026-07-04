@@ -38,6 +38,11 @@ no_stele_text = """
 Тем не менее есть фото плиты и этот человек есть в списках репрессированных и упомянут в Книге Памяти
 """
 
+help_text = """Бот можно использовать двумя способами:
+1. Обычный поиск. Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
+2. Поиск с подсказками. Нажмите кнопку "Поиск с подсказками", после этого начните вводить данные репрессированного. В режиме онлайн перед вами начнут появляться фамилии репрессированных, вы можете выбрать интересующего вас человека.
+"""
+
 app = Flask(__name__)
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -101,6 +106,7 @@ def start(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
     keyboard.add(types.KeyboardButton(text='Поиск с подсказками'))
     keyboard.add(types.KeyboardButton(text='Схема комплекса'))
+    keyboard.add(types.KeyboardButton(text='Как использовать бот?'))
     bot.send_message(message.chat.id, start_text, parse_mode='html', reply_markup=keyboard)
 
 def find_fio_keyboard():
@@ -116,6 +122,10 @@ def find_people(message: types.Message):
 @bot.message_handler(func=lambda message: message.text == 'Схема комплекса')
 def send_schema(message: types.Message):
     bot.send_message(message.chat.id, text = f"<a href='{map_url}'>Схема комплекса</a>", parse_mode='html')
+
+@bot.message_handler(func=lambda message: message.text == 'Как использовать бот?')
+def send_help(message: types.Message):
+    bot.send_message(message.chat.id, text=help_text)
 
 @bot.inline_handler(func=lambda query: True)
 def find_by_fio(query):
