@@ -17,9 +17,7 @@ start_text = """
 
 <u><b>Как использовать бот?</b></u>
 
-Бот можно использовать двумя способами:
-1. Обычный поиск. Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
-2. Поиск с подсказками. Нажмите кнопку "Поиск с подсказками", после этого начните вводить данные репрессированного. В режиме онлайн перед вами начнут появляться фамилии репрессированных, вы можете выбрать интересующего вас человека.
+Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
 
 <u><b>Какая информация есть в карточке?</b></u>
 
@@ -38,9 +36,7 @@ no_stele_text = """
 Тем не менее есть фото плиты и этот человек есть в списках репрессированных и упомянут в Книге Памяти
 """
 
-help_text = """Бот можно использовать двумя способами:
-1. Обычный поиск. Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
-2. Поиск с подсказками. Нажмите кнопку "Поиск с подсказками", после этого начните вводить данные репрессированного. В режиме онлайн перед вами начнут появляться фамилии репрессированных, вы можете выбрать интересующего вас человека.
+help_text = """Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
 """
 
 app = Flask(__name__)
@@ -104,20 +100,20 @@ def find_by_name(name):
 @bot.message_handler(commands=['start'])
 def start(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-    keyboard.add(types.KeyboardButton(text='Поиск с подсказками'))
+    # keyboard.add(types.KeyboardButton(text='Поиск с подсказками'))
     keyboard.add(types.KeyboardButton(text='Схема комплекса'))
     keyboard.add(types.KeyboardButton(text='Как использовать бот?'))
     bot.send_message(message.chat.id, start_text, parse_mode='html', reply_markup=keyboard)
 
-def find_fio_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    switch_button = types.InlineKeyboardButton(text="Начать", switch_inline_query_current_chat="")
-    keyboard.add(switch_button)
-    return keyboard
+# def find_fio_keyboard():
+#     keyboard = types.InlineKeyboardMarkup()
+#     switch_button = types.InlineKeyboardButton(text="Начать", switch_inline_query_current_chat="")
+#     keyboard.add(switch_button)
+#     return keyboard
 
-@bot.message_handler(func=lambda message: message.text == 'Поиск с подсказками')
-def find_people(message: types.Message):
-    bot.send_message(message.chat.id, "Нажмите чтобы начать поиск", reply_markup=find_fio_keyboard())
+# @bot.message_handler(func=lambda message: message.text == 'Поиск с подсказками')
+# def find_people(message: types.Message):
+#     bot.send_message(message.chat.id, "Нажмите чтобы начать поиск", reply_markup=find_fio_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == 'Схема комплекса')
 def send_schema(message: types.Message):
@@ -127,26 +123,26 @@ def send_schema(message: types.Message):
 def send_help(message: types.Message):
     bot.send_message(message.chat.id, text=help_text)
 
-@bot.inline_handler(func=lambda query: True)
-def find_by_fio(query):
-    try:
-        text = query.query
-        if len(text) < 1:
-            return
-        people = find_by_name(text)[:6]
-        lines = [row["FIO"] for row in people]
-        results = []
-        for index, line in enumerate(lines):
-            results.append(
-                types.InlineQueryResultArticle(
-                    id=str(index),
-                    title=line,
-                    input_message_content=types.InputTextMessageContent(message_text=line),
-                )
-            )
-        bot.answer_inline_query(query.id, results, cache_time=1)
-    except Exception as e:
-        print(e)
+# @bot.inline_handler(func=lambda query: True)
+# def find_by_fio(query):
+#     try:
+#         text = query.query
+#         if len(text) < 1:
+#             return
+#         people = find_by_name(text)[:6]
+#         lines = [row["FIO"] for row in people]
+#         results = []
+#         for index, line in enumerate(lines):
+#             results.append(
+#                 types.InlineQueryResultArticle(
+#                     id=str(index),
+#                     title=line,
+#                     input_message_content=types.InputTextMessageContent(message_text=line),
+#                 )
+#             )
+#         bot.answer_inline_query(query.id, results, cache_time=1)
+#     except Exception as e:
+#         print(e)
 
 @bot.message_handler(func=lambda message: True)
 def send_person_details(message):
