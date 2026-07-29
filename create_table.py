@@ -79,7 +79,7 @@ with db_connection.connect() as connection:
         when STELE_NUMBER in (11,12,13,14,15,16,17,18,19) then "2"
         when STELE_NUMBER in (20,21,22,23,24,25,26,27) then "3"
         when STELE_NUMBER in (28,29,30,31,32) then "4"
-        when STELE_NUMBER in (33,34,35,369) then "5"
+        when STELE_NUMBER in (33,34,35,36) then "5"
         when STELE_NUMBER in (37,38,39,40) then "6"
         when STELE_NUMBER in (41,42,43,44,45,46) then "7"
         else "" end,
@@ -89,7 +89,7 @@ with db_connection.connect() as connection:
         when STELE_NUMBER in (11,12,13,14,15,16,17,18,19) then "karty/sector2.png" 
         when STELE_NUMBER in (20,21,22,23,24,25,26,27) then "karty/sector3.png" 
         when STELE_NUMBER in (28,29,30,31,32) then "karty/sector4.png" 
-        when STELE_NUMBER in (33,34,35,369) then "karty/sector5.png" 
+        when STELE_NUMBER in (33,34,35,36) then "karty/sector5.png" 
         when STELE_NUMBER in (37,38,39,40) then "karty/sector6.png" 
         when STELE_NUMBER in (41,42,43,44,45,46) then "karty/sector7.png" 
         else "" end,
