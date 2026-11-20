@@ -95,7 +95,7 @@ if not TOKEN:
 bot = TeleBot(TOKEN)
 logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 url = os.environ.get("WEBHOOK_URL", "")
-img_url = "http://46.101.97.212:8090/martirolog_new/"
+img_url = "http://207.154.218.39:8090/martirolog_new/"
 map_url = img_url + "karty/sector-all.png"
 
 conn = {
