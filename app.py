@@ -1,32 +1,51 @@
+"""Телеграм-бот мартиролога мемориала «12 километр» (@ek_12km_bot).
+
+Как устроен:
+- таблица мартиролога читается из базы в память и перечитывается раз в несколько минут;
+  поиск идёт по памяти и не зависит от точек, пробелов и регистра в инициалах;
+- фото плит берутся с диска сервера (PHOTO_DIR); Telegram-идентификаторы уже отправленных
+  фото запоминаются, повторная отправка идёт без загрузки файла;
+- все адреса и пути задаются переменными окружения (/etc/martirolog/env), в коде только
+  значения по умолчанию.
+
+Переменные окружения:
+  TOKEN                      токен бота (обязательно)
+  DATABASE_HOST / _PORT / _USER / _PASSWORD / DATABASE_NAME / TABLE_NAME
+  PHOTO_DIR                  папка с фото плит на сервере (по умолчанию /var/www/files/martirolog_new)
+  PUBLIC_PHOTO_URL           публичный адрес той же папки (по умолчанию https://12km.org/photos/)
+  IS_DEV                     true — режим разработки: читать .env_local, подробный журнал
+"""
 import html
+import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.parse
+from collections import Counter
 
 import mysql.connector
 import requests
-from flask import Flask, request
-from mysql.connector import Error
 from telebot import TeleBot, types, logger
 from telebot.util import content_type_media, content_type_service
 
-# Нечёткий поиск (подсказки при опечатках): pip install rapidfuzz
+# Нечёткий поиск (подсказки при опечатках)
 try:
-    from rapidfuzz import process as fuzz_process
-    from rapidfuzz import utils as fuzz_utils
+    from rapidfuzz import fuzz, process as fuzz_process
 except ImportError:
+    fuzz = None
     fuzz_process = None
-    fuzz_utils = None
     print("Внимание: библиотека rapidfuzz не установлена. Подсказки при опечатках работать не будут.")
+
+# ---------------------------------------------------------------- тексты
 
 start_text = """
 <b>Приветствуем! Это бот-мартиролог мемориала жертв политических репрессий 12 километр в Екатеринбурге.</b>
 
 <u><b>Что умеет этот бот?</b></u>
 
-Бот содержит полный список захороненных в Мемориальном комплексе 12 километр жертв Большого Террора. С помощью поискового запроса вы можете получить карточку репрессированного.
+В боте — имена с плит Мемориального комплекса 12 километр: расстрелянных по политическим обвинениям в 1930-е – 1940-е годы и захороненных на 12-м километре Московского тракта. С помощью поискового запроса вы можете получить карточку репрессированного.
 Также вы можете изучить схему мемориального комплекса и найти нужную стелу. Для этого нажмите кнопку "🗺 Схема комплекса"
 
 <u><b>Как использовать бот?</b></u>
@@ -53,7 +72,7 @@ no_stele_text = """
 help_text = """<b>Как использовать бот?</b>
 
 Введите фамилию репрессированного и получите карточки всех репрессированных с такой фамилией.
-Вы можете ввести как полную фамилию, так и фамилию с инициалами (например, "Иванов И.И.").
+К фамилии можно добавить инициалы или имя и отчество — в любом виде: "Иванов И.И.", "Иванов И И", "Иванов Иван Иванович".
 
 🔍 <b>Уточнение по году:</b>
 Если найдено слишком много людей, добавьте к фамилии год рождения или год расстрела (например, "Иванов 1890" или "Петров 1937"). Поиск всегда начинается с фамилии — искать только по году нельзя.
@@ -62,10 +81,11 @@ help_text = """<b>Как использовать бот?</b>
 """
 
 enter_surname_text = "Пожалуйста, введите фамилию. Поиск по одному только году не поддерживается — год можно добавить к фамилии для уточнения (например, «Иванов 1937»)."
-
 not_text_reply = "Бот понимает только текстовые сообщения. Введите фамилию репрессированного — например: Иванов"
+tech_error_text = "Произошла техническая ошибка. Мы уже работаем над ней. Пожалуйста, попробуйте позже."
+not_found_text = "Извините, мы никого не нашли с такой фамилией. Проверьте правильность написания."
 
-app = Flask(__name__)
+# ---------------------------------------------------------------- настройки
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -75,147 +95,294 @@ def env_bool(name: str, default: bool = False) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
-IS_DEV = env_bool("IS_DEV", default=True)
+IS_DEV = env_bool("IS_DEV", default=False)
 
-if IS_DEV:
-    env_file = ".env_local"
-    if os.path.exists(env_file):
-        with open(env_file) as f:
-            for line in f:
-                if "=" in line and not line.strip().startswith("#"):
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
-
-POLLING_MODE = env_bool("POLLING_MODE", default=IS_DEV)
+# Для запуска на своём компьютере: настройки из файла .env_local рядом с кодом
+if os.path.exists(".env_local") and env_bool("IS_DEV", default=True):
+    with open(".env_local", encoding="utf-8") as f:
+        for line in f:
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+    IS_DEV = env_bool("IS_DEV", default=True)
 
 TOKEN = os.environ.get("TOKEN")
 if not TOKEN:
     raise SystemExit("Ошибка: переменная окружения TOKEN не задана (токен бота).")
 
-bot = TeleBot(TOKEN)
-logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
-url = os.environ.get("WEBHOOK_URL", "")
-img_url = "http://207.154.218.39:8090/martirolog_new/"
-map_url = img_url + "karty/sector-all.png"
-
-conn = {
+DB_CONFIG = {
     "host": os.environ.get("DATABASE_HOST") or "127.0.0.1",
     "port": int(os.environ.get("DATABASE_PORT") or 3306),
     "user": os.environ.get("DATABASE_USER") or "root",
     "password": os.environ.get("DATABASE_PASSWORD"),
+    "connection_timeout": 5,  # не ждать зависшую базу дольше 5 секунд
 }
-db_name = os.environ.get("DATABASE_NAME")
-table_name = os.environ.get("TABLE_NAME")
+DB_NAME = os.environ.get("DATABASE_NAME") or ""
+TABLE_NAME = os.environ.get("TABLE_NAME") or ""
+for _label, _value in (("DATABASE_NAME", DB_NAME), ("TABLE_NAME", TABLE_NAME)):
+    if not re.fullmatch(r"\w+", _value):
+        raise SystemExit(f"Ошибка: переменная окружения {_label} не задана или содержит недопустимые символы.")
 
-MAX_QUERY_LEN = 100        # максимальная длина запроса пользователя
-MAX_CARDS = 10             # больше этого — показываем компактный список
-MAX_LIST_LINES = 30        # больше этого — просим уточнить запрос
-FUZZY_SUGGESTIONS = 3      # сколько подсказок-кнопок предлагать
-FIO_CACHE_TTL = 24 * 3600  # раз в сутки перечитываем список ФИО из базы
+PHOTO_DIR = os.path.normpath(os.environ.get("PHOTO_DIR") or "/var/www/files/martirolog_new")
+PUBLIC_PHOTO_URL = (os.environ.get("PUBLIC_PHOTO_URL") or "https://12km.org/photos/").rstrip("/") + "/"
+PHOTO_ON_DISK = os.path.isdir(PHOTO_DIR)  # на сервере — да; на своём компьютере фото берутся по сети
+MAP_PHOTO = "karty/sector-all.png"
 
+# Куда запоминать идентификаторы фото. STATE_DIRECTORY задаёт systemd (StateDirectory= в службе).
+# В имени файла — номер бота (часть токена до двоеточия, не секрет): у тестового бота свой файл.
+STATE_DIR = (os.environ.get("STATE_DIRECTORY") or ".").split(":")[0]
+FILE_ID_PATH = os.path.join(STATE_DIR, f"file_ids_{TOKEN.split(':')[0]}.json")
+
+MAX_QUERY_LEN = 100     # максимальная длина запроса пользователя
+MAX_CARDS = 10          # больше этого — показываем компактный список
+MAX_LIST_LINES = 90     # в одном сообщении Telegram не больше 100 выделенных фрагментов
+MAX_LIST_CHARS = 3800   # и не больше 4096 знаков
+FUZZY_SUGGESTIONS = 3   # сколько подсказок-кнопок предлагать
+FUZZY_CUTOFF = 72       # порог похожести фамилий, 0–100
+DATA_TTL = 300          # раз в 5 минут перечитываем таблицу из базы
+DATA_RETRY = 30         # если база не ответила — следующая попытка через 30 секунд
+
+bot = TeleBot(TOKEN)
+logger.setLevel(logging.DEBUG if IS_DEV else logging.INFO)
 esc = html.escape
 
+# ---------------------------------------------------------------- разбор имён
 
-def db_query(query, params=()):
-    """Выполняет запрос к базе. Возвращает список строк или None при ошибке."""
-    connection = None
-    cursor = None
-    try:
-        connection = mysql.connector.connect(**conn)
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(query, params)
-        return cursor.fetchall()
-    except Error as e:
-        logger.error(f"Database error: {e}")
-        return None
-    finally:
-        if cursor:
-            cursor.close()
-        if connection and connection.is_connected():
-            connection.close()
+_WORD_RE = re.compile(r"[a-zа-я]+(?:-[a-zа-я]+)*")
+_YEAR_RE = re.compile(r"\b\d{4}\b")
+
+
+def normalize(text):
+    """Нижний регистр, ё→е, все виды тире → дефис."""
+    text = str(text or "").lower().replace("ё", "е")
+    return re.sub(r"[‐‑‒–—−]", "-", text)
+
+
+def split_name(text):
+    """«БИТНЫЙ К..А.» → («битный», «ка»); «Го-Хун-Бин» → («го-хун-бин», «»).
+
+    Фамилия — первое слово; всё остальное (инициалы или имя) склеивается в одни буквы,
+    поэтому точки, запятые, пробелы и регистр на поиск не влияют.
+    """
+    words = _WORD_RE.findall(normalize(text))
+    if not words:
+        return "", []
+    return words[0], [w.replace("-", "") for w in words[1:]]
 
 
 def parse_query(text):
-    """Разбирает запрос пользователя на фамилию и год (год — только уточнение)."""
-    text = text.strip()[:MAX_QUERY_LEN]
+    """Запрос пользователя → (фамилия, слова после фамилии, год или None)."""
+    text = (text or "").strip()[:MAX_QUERY_LEN]
     # наследие старого формата: если переслали строку карточки "ФИО: ..."
     if "ФИО: " in text:
         text = text.split("ФИО: ")[-1]
-    years = re.findall(r"\b\d{4}\b", text)
-    name = re.sub(r"\b\d{4}\b", "", text)
-    # убираем спецсимволы LIKE (% и _), чтобы ими нельзя было управлять поиском
-    name = name.replace("%", "").replace("_", "")
-    name = re.sub(r"\s+", " ", name).strip()
-    # фамилия обязана содержать хотя бы одну букву
-    if not re.search(r"[а-яёa-z]", name, re.IGNORECASE):
-        name = ""
-    return name, (years[0] if years else None)
+    years = _YEAR_RE.findall(text)
+    surname, rest = split_name(_YEAR_RE.sub(" ", text))
+    return surname, rest, (years[0] if years else None)
 
 
-def normalize_fio(s):
-    """Нижний регистр и ё→е, чтобы «Семенов» находил «СЕМЁНОВ»."""
-    return s.lower().replace("ё", "е")
+# ---------------------------------------------------------------- данные в памяти
+
+_data = {"entries": [], "surnames": Counter(), "ts": 0.0}
+_data_lock = threading.Lock()
 
 
-def find_by_name(name, year=None):
-    """Ищет людей по началу ФИО, год — дополнительный фильтр."""
-    query = (
-        f"SELECT * FROM {db_name}.{table_name} "
-        "WHERE REPLACE(LOWER(FIO), 'ё', 'е') LIKE %s"
-    )
-    params = [normalize_fio(name) + "%"]
-    if year:
-        query += " AND (CAST(BIRTH_YEAR AS CHAR) = %s OR CAST(EXECUTION_YEAR AS CHAR) = %s)"
-        params.extend([year, year])
-    query += " ORDER BY FIO"
-    return db_query(query, tuple(params))
+def _fetch_rows():
+    connection = mysql.connector.connect(**DB_CONFIG)
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(f"SELECT * FROM `{DB_NAME}`.`{TABLE_NAME}`")
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    finally:
+        connection.close()
 
 
-# Кеш всех ФИО в памяти — чтобы подсказки при опечатках не читали базу каждый раз
-_fio_cache = {"names": [], "ts": 0.0}
+def build_entries(rows):
+    """Готовит строки таблицы к поиску: фамилия, буквы инициалов, всё слитно."""
+    entries = []
+    for row in rows:
+        surname, rest = split_name(row.get("FIO"))
+        rest = "".join(rest)
+        entries.append({
+            "surname": surname,
+            "rest": rest,
+            "compact": surname.replace("-", "") + rest,
+            "years": {str(row.get("BIRTH_YEAR") or "").strip(), str(row.get("EXECUTION_YEAR") or "").strip()},
+            "sort": (normalize(row.get("FIO")), str(row.get("BIRTH_YEAR") or "")),
+            "row": row,
+        })
+    entries.sort(key=lambda e: e["sort"])
+    return entries
 
 
-def get_all_fio():
+def get_entries():
+    """Возвращает таблицу из памяти; раз в DATA_TTL секунд перечитывает её из базы.
+
+    Если база не отвечает, бот продолжает работать на последних прочитанных данных.
+    """
     now = time.time()
-    if _fio_cache["names"] and now - _fio_cache["ts"] < FIO_CACHE_TTL:
-        return _fio_cache["names"]
-    rows = db_query(f"SELECT DISTINCT FIO FROM {db_name}.{table_name}")
-    if rows:
-        _fio_cache["names"] = [r["FIO"] for r in rows]
-        _fio_cache["ts"] = now
-    return _fio_cache["names"]
+    if now - _data["ts"] < DATA_TTL:
+        return _data["entries"]
+    # перечитывает кто-то один; остальные в это время пользуются прежними данными
+    if not _data_lock.acquire(blocking=not _data["entries"]):
+        return _data["entries"]
+    try:
+        if time.time() - _data["ts"] < DATA_TTL:
+            return _data["entries"]
+        try:
+            entries = build_entries(_fetch_rows())
+            if not entries:
+                raise RuntimeError("таблица пуста")
+            _data["entries"] = entries
+            _data["surnames"] = Counter(e["surname"] for e in entries if e["surname"])
+            _data["ts"] = time.time()
+            logger.info("Таблица мартиролога прочитана: %d записей", len(entries))
+        except Exception as e:
+            logger.error("Не удалось прочитать таблицу из базы: %s", e)
+            _data["ts"] = time.time() - DATA_TTL + DATA_RETRY
+    finally:
+        _data_lock.release()
+    return _data["entries"]
 
 
-def get_fuzzy_suggestions(name, limit=FUZZY_SUGGESTIONS):
-    """Возвращает до `limit` похожих ФИО (подсказки при опечатке)."""
-    if not fuzz_process:
+# ---------------------------------------------------------------- поиск
+
+
+def match_entries(entries, surname, rest):
+    """Ищет людей. С инициалами — фамилия точно; без них — по началу фамилии."""
+    if rest:
+        letters = "".join(rest)                 # «и», «и» → «ии»; «ге», «бон» → «гебон»
+        initials = "".join(w[0] for w in rest)  # «иван», «петрович» → «ип»
+        found = [e for e in entries if e["surname"] == surname and e["rest"].startswith(letters)]
+        if not found and initials != letters:
+            found = [e for e in entries if e["surname"] == surname and e["rest"].startswith(initials)]
+        if not found and not any(e["surname"] == surname for e in entries):
+            # такой фамилии нет вовсе — возможно, имя из нескольких слов: «го хун бин», «хан ге бон»
+            compact = surname.replace("-", "") + letters
+            found = [e for e in entries if e["compact"].startswith(compact)]
+        return found
+    found = [e for e in entries if e["surname"].startswith(surname)]
+    if not found:
+        compact = surname.replace("-", "")
+        found = [e for e in entries if e["compact"].startswith(compact)]
+    # сначала точное совпадение фамилии, потом «Ивановский», «Иванова» и т. п.
+    found.sort(key=lambda e: e["surname"] != surname)
+    return found
+
+
+def get_fuzzy_suggestions(surname, limit=FUZZY_SUGGESTIONS):
+    """Возвращает до `limit` похожих фамилий из базы (подсказки при опечатке)."""
+    surnames = _data["surnames"]
+    if not fuzz_process or not surnames:
         return []
-    names = get_all_fio()
-    if not names:
-        return []
-    # processor приводит строки к одному виду (регистр и т.п.) — как делала thefuzz
-    matches = fuzz_process.extract(
-        name, names, limit=limit * 5, score_cutoff=70,
-        processor=fuzz_utils.default_process,
-    )
-    suggestions = []
-    for match in matches:
-        candidate = match[0]
-        # среди тёзок предлагаем каждую фамилию один раз
-        if candidate not in suggestions:
-            suggestions.append(candidate)
-        if len(suggestions) >= limit:
-            break
-    return suggestions
+    matches = fuzz_process.extract(surname, list(surnames), scorer=fuzz.ratio, limit=limit, score_cutoff=FUZZY_CUTOFF)
+    return [m[0] for m in matches]
 
 
-def suggestion_keyboard(names):
+def suggestion_keyboard(surnames, rest):
     keyboard = types.InlineKeyboardMarkup()
-    for name in names:
+    for surname in surnames:
+        data = "s:" + " ".join([surname] + rest)
         # ограничение Telegram: callback_data не длиннее 64 байт
-        data = ("s:" + name).encode("utf-8")[:64].decode("utf-8", errors="ignore")
-        keyboard.add(types.InlineKeyboardButton(text=name, callback_data=data))
+        if len(data.encode("utf-8")) > 64:
+            data = ("s:" + surname).encode("utf-8")[:64].decode("utf-8", errors="ignore")
+        label = f"{surname.upper()} ({_data['surnames'][surname]})"
+        keyboard.add(types.InlineKeyboardButton(text=label, callback_data=data))
     return keyboard
+
+
+# ---------------------------------------------------------------- фото
+
+_file_ids = {}
+_file_ids_lock = threading.Lock()
+
+
+def load_file_ids():
+    try:
+        with open(FILE_ID_PATH, encoding="utf-8") as f:
+            saved = json.load(f)
+        if isinstance(saved, dict):
+            _file_ids.update(saved)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.error("Не удалось прочитать %s: %s", FILE_ID_PATH, e)
+
+
+def remember_file_id(rel, sig, file_id):
+    with _file_ids_lock:
+        _file_ids[rel] = {"sig": sig, "id": file_id}
+        try:
+            tmp = FILE_ID_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(_file_ids, f, ensure_ascii=False)
+            os.replace(tmp, FILE_ID_PATH)
+        except Exception as e:
+            # не страшно: идентификаторы останутся в памяти до перезапуска
+            logger.error("Не удалось сохранить %s: %s", FILE_ID_PATH, e)
+
+
+def photo_file(rel):
+    """Путь к файлу фото на диске; None, если путь выходит за пределы PHOTO_DIR."""
+    full = os.path.normpath(os.path.join(PHOTO_DIR, rel))
+    return full if full.startswith(PHOTO_DIR + os.sep) else None
+
+
+def photo_signature(rel):
+    """Отпечаток файла (время изменения и размер): заменили фото — запомненный идентификатор не годится."""
+    if not PHOTO_ON_DISK:
+        return "http"
+    path = photo_file(rel)
+    try:
+        st = os.stat(path) if path else None
+    except OSError:
+        st = None
+    return f"{int(st.st_mtime)}:{st.st_size}" if st else None
+
+
+def read_photo(rel):
+    try:
+        if PHOTO_ON_DISK:
+            with open(photo_file(rel), "rb") as f:
+                return f.read()
+        response = requests.get(PUBLIC_PHOTO_URL + urllib.parse.quote(rel), timeout=10)
+        if response.status_code == 200:
+            return response.content
+        logger.error("Фото не получено, код %s: %s", response.status_code, rel)
+    except Exception as e:
+        logger.error("Фото не прочитано (%s): %s", rel, e)
+    return None
+
+
+def send_photo_cached(chat_id, rel, caption, parse_mode=None):
+    """Отправляет фото. Возвращает False, если файла нет. Ошибки Telegram не глушит."""
+    rel = str(rel).replace("\\", "/").lstrip("/")
+    sig = photo_signature(rel)
+    if sig is None:
+        logger.error("Нет файла фото: %s", rel)
+        return False
+    cached = _file_ids.get(rel)
+    if cached and cached.get("sig") == sig:
+        try:
+            bot.send_photo(chat_id, cached["id"], caption=caption, parse_mode=parse_mode)
+            return True
+        except Exception as e:
+            logger.error("Запомненный идентификатор фото не сработал (%s): %s", rel, e)
+            _file_ids.pop(rel, None)
+    data = read_photo(rel)
+    if not data:
+        return False
+    message = bot.send_photo(chat_id, data, caption=caption, parse_mode=parse_mode)
+    try:
+        remember_file_id(rel, sig, message.photo[-1].file_id)
+    except Exception as e:
+        logger.error("Идентификатор фото не запомнен (%s): %s", rel, e)
+    return True
+
+
+# ---------------------------------------------------------------- карточки
 
 
 def build_card_text(detail):
@@ -227,14 +394,16 @@ def build_card_text(detail):
 
     # В "Номер сектора" ссылка на Схему комплекса
     if detail.get("SECTOR_NUMBER"):
-        rows.append(f"Номер сектора: {esc(str(detail['SECTOR_NUMBER']))} (<a href='{map_url}'>Схема комплекса</a>)")
+        map_link = esc(PUBLIC_PHOTO_URL + MAP_PHOTO)
+        rows.append(f"Номер сектора: {esc(str(detail['SECTOR_NUMBER']))} (<a href='{map_link}'>Схема комплекса</a>)")
     else:
         rows.append("Номер сектора: -")
 
     # В "Номер стелы" ссылка на Схему сектора
     if detail.get("STELE_NUMBER"):
-        sector_photo = detail.get("SECTOR_PHOTO") or ""
-        stele_link = f" (<a href='{img_url + sector_photo}'>Схема сектора</a>)" if sector_photo else ""
+        sector_photo = str(detail.get("SECTOR_PHOTO") or "")
+        sector_link = esc(PUBLIC_PHOTO_URL + urllib.parse.quote(sector_photo))
+        stele_link = f" (<a href='{sector_link}'>Схема сектора</a>)" if sector_photo else ""
         rows.append(f"Номер стелы: {esc(str(detail['STELE_NUMBER']))}{stele_link}")
     else:
         rows.append("Номер стелы: -")
@@ -257,7 +426,7 @@ def build_card_text(detail):
     if not detail.get("STELE_NUMBER"):
         rows.append(no_stele_text)
     elif not detail.get("SLAB_PHOTO"):
-        # плита установлена, но не отснята (8 плит, ~350 человек) — тот же текст, что на сайте
+        # плита установлена, но не отснята — тот же текст, что на сайте
         where = f"на плите {esc(str(detail['SLAB_NUMBER']))}" if detail.get("SLAB_NUMBER") else "на плите"
         rows.append(
             f"\nФотографии этой плиты в архиве пока нет — мы работаем над её появлением. "
@@ -267,90 +436,118 @@ def build_card_text(detail):
     return "\n".join(rows)
 
 
-def download_slab_photo(detail):
-    """Скачивает фото плиты с нашего сервера. Возвращает bytes или None."""
-    raw_photo_url = img_url + detail["SLAB_PHOTO"]
-    photo_url = urllib.parse.quote(raw_photo_url, safe=":/?=&")
-    try:
-        response = requests.get(photo_url, timeout=10)
-        if response.status_code == 200:
-            return response.content
-        logger.error(f"Failed to download photo. Status: {response.status_code}, URL: {photo_url}")
-    except Exception as e:
-        logger.error(f"Failed to download photo {photo_url}: {e}")
-    return None
-
-
 def send_card(chat_id, detail):
     text = build_card_text(detail)
-    photo = download_slab_photo(detail) if detail.get("SLAB_PHOTO") else None
+    photo = detail.get("SLAB_PHOTO")
+
+    unavailable = "Фото плиты временно недоступно, попробуйте позже."  # без ссылок и адресов наружу
 
     if photo and len(text) <= 1024:
         # карточка и фото одним сообщением (текст — подпись к фото)
-        bot.send_photo(chat_id, photo, caption=text, parse_mode="html")
-    elif photo:
-        bot.send_message(chat_id, text, parse_mode="html", disable_web_page_preview=True)
-        bot.send_photo(chat_id, photo, caption=f"Плита: {detail.get('FIO') or ''}")
-    else:
-        if detail.get("SLAB_PHOTO"):
-            # фото должно быть, но сервер его не отдал — без ссылок и адресов наружу
-            text += "\n\nФото плиты временно недоступно, попробуйте позже."
-        elif detail.get("SLAB_NUMBER"):
-            # плита есть, но её фото пока нет в архиве (В1-В3, Н1-Н3, Н5-Н6)
-            text += "\n\nФотографии этой плиты в архиве пока нет — мы работаем над её появлением."
-        bot.send_message(chat_id, text, parse_mode="html", disable_web_page_preview=True)
+        if send_photo_cached(chat_id, photo, text, "html"):
+            return
+        text += "\n\n" + unavailable
+        photo = None
+    bot.send_message(chat_id, text, parse_mode="html", disable_web_page_preview=True)
+    if photo:
+        # текст длиннее подписи к фото — фото отдельным сообщением
+        if not send_photo_cached(chat_id, photo, f"Плита: {detail.get('FIO') or ''}"):
+            bot.send_message(chat_id, unavailable)
+
+
+def send_cards(chat_id, details):
+    """Отправляет карточки по одной; сбой одной не мешает остальным."""
+    failed = 0
+    for detail in details:
+        try:
+            send_card(chat_id, detail)
+        except Exception as e:
+            failed += 1
+            logger.error("Карточка не отправлена: %s", e)
+    if failed:
+        bot.send_message(chat_id, f"Не удалось отправить карточек: {failed} из {len(details)}. Пожалуйста, попробуйте позже.")
 
 
 def send_compact_list(chat_id, details):
     total = len(details)
-    lines = [f"Найдено: {total}. Список ниже — нажмите на фамилию, чтобы скопировать её, и отправьте сообщением (при полных тёзках добавьте год)."]
+    lines = [f"Найдено: {total}. Нажмите на имя — оно скопируется; отправьте его сообщением, чтобы получить карточку (при полных тёзках добавьте год)."]
+    size = len(lines[0])
+    shown = 0
     for d in details[:MAX_LIST_LINES]:
         fio = esc(str(d.get("FIO") or "-"))
         birth = esc(str(d.get("BIRTH_YEAR") or "?"))
         execution = esc(str(d.get("EXECUTION_YEAR") or "?"))
-        lines.append(f"• <code>{fio}</code> ({birth}–{execution})")
-    if total > MAX_LIST_LINES:
-        lines.append(f"…и ещё {total - MAX_LIST_LINES}. Уточните запрос: добавьте инициалы или год (например, «Иванов И. 1937»).")
+        line = f"• <code>{fio}</code> ({birth}–{execution})"
+        if size + len(line) + 1 > MAX_LIST_CHARS:
+            break
+        lines.append(line)
+        size += len(line) + 1
+        shown += 1
+    if total > shown:
+        lines.append(f"…и ещё {total - shown}. Уточните запрос: добавьте инициалы или год (например, «Иванов И. 1937»).")
     bot.send_message(chat_id, "\n".join(lines), parse_mode="html")
 
 
 def handle_search(chat_id, raw_text):
     try:
-        name, year = parse_query(raw_text or "")
-
-        if not name:
+        surname, rest, year = parse_query(raw_text)
+        if not surname:
             bot.send_message(chat_id, enter_surname_text)
             return
 
-        details = find_by_name(name, year)
-
-        if details is None:
-            bot.send_message(chat_id, "Произошла техническая ошибка. Мы уже работаем над ней. Пожалуйста, попробуйте позже.")
+        entries = get_entries()
+        if not entries:
+            bot.send_message(chat_id, tech_error_text)
             return
 
-        if not details:
-            suggestions = get_fuzzy_suggestions(name)
+        notes = []
+        found = match_entries(entries, surname, rest)
+
+        if not found and rest:
+            # фамилия есть, а таких инициалов нет — показываем всех с этой фамилией
+            found = [e for e in entries if e["surname"] == surname]
+            if found:
+                notes.append(f"С фамилией <b>{esc(surname.upper())}</b> найдено: {len(found)}, но с такими инициалами или именем — никого. Показываем всех с этой фамилией.")
+
+        if not found:
+            suggestions = get_fuzzy_suggestions(surname)
             if suggestions:
                 bot.send_message(
                     chat_id,
-                    f"Извините, мы никого не нашли с фамилией <b>{esc(name)}</b>.\n\nВозможно, вы имели в виду (нажмите на вариант):",
+                    f"Извините, мы никого не нашли с фамилией <b>{esc(surname.upper())}</b>.\n\nВозможно, вы имели в виду (нажмите на вариант):",
                     parse_mode="html",
-                    reply_markup=suggestion_keyboard(suggestions),
+                    reply_markup=suggestion_keyboard(suggestions, rest),
                 )
             else:
-                bot.send_message(chat_id, "Извините, мы никого не нашли с такой фамилией. Проверьте правильность написания.")
+                bot.send_message(chat_id, not_found_text)
             return
 
+        if year:
+            with_year = [e for e in found if year in e["years"]]
+            if with_year:
+                found = with_year
+            else:
+                notes.append(f"Среди найденных ({len(found)}) нет никого с годом рождения или расстрела {esc(year)}. Показываем без учёта года.")
+
+        if notes:
+            bot.send_message(chat_id, "\n\n".join(notes), parse_mode="html")
+
+        details = [e["row"] for e in found]
         if len(details) > MAX_CARDS:
             send_compact_list(chat_id, details)
-            return
-
-        for detail in details:
-            send_card(chat_id, detail)
+        else:
+            send_cards(chat_id, details)
 
     except Exception as e:
-        logger.error(f"Unexpected error in handle_search for query '{raw_text}': {e}")
-        bot.send_message(chat_id, "Произошла техническая ошибка. Мы уже работаем над ней. Пожалуйста, попробуйте позже.")
+        # текст запроса в журнал не пишем: это чьи-то родные
+        logger.error("Ошибка при обработке запроса: %s: %s", type(e).__name__, e)
+        try:
+            bot.send_message(chat_id, tech_error_text)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- обработчики Telegram
 
 
 @bot.message_handler(commands=["start"])
@@ -370,20 +567,22 @@ def help_command(message: types.Message):
 @bot.message_handler(func=lambda message: message.text in ["Схема комплекса", "🗺 Схема комплекса"])
 def send_schema(message: types.Message):
     try:
-        # Скачиваем картинку сами, так как Telegram не любит прямые http:// ссылки
-        response = requests.get(map_url, timeout=10)
-        if response.status_code == 200:
-            bot.send_photo(message.chat.id, response.content, caption="Схема мемориального комплекса")
-        else:
-            raise Exception(f"Status code {response.status_code}")
+        if send_photo_cached(message.chat.id, MAP_PHOTO, "Схема мемориального комплекса"):
+            return
     except Exception as e:
-        logger.error(f"Failed to send map: {e}")
-        bot.send_message(message.chat.id, "Не удалось загрузить схему комплекса. Пожалуйста, попробуйте позже.")
+        logger.error("Схема не отправлена: %s", e)
+    bot.send_message(message.chat.id, "Не удалось загрузить схему комплекса. Пожалуйста, попробуйте позже.")
 
 
 @bot.message_handler(func=lambda message: message.text in ["Как использовать бот?", "ℹ️ Как использовать бот?"])
 def send_help(message: types.Message):
     bot.send_message(message.chat.id, text=help_text, parse_mode="html")
+
+
+@bot.message_handler(func=lambda message: bool(message.text) and message.text.startswith("/"))
+def unknown_command(message: types.Message):
+    # незнакомая команда — не ищем её как фамилию, а показываем справку
+    bot.send_message(message.chat.id, help_text, parse_mode="html")
 
 
 @bot.message_handler(func=lambda message: True)
@@ -403,7 +602,7 @@ def on_suggestion_click(call):
 
 @bot.callback_query_handler(func=lambda call: True)
 def unknown_callback(call) -> None:
-    logger.info("Unknown callback %s", call.data)
+    logger.info("Unknown callback")
 
 
 @bot.message_handler(content_types=content_type_media)
@@ -424,32 +623,12 @@ def setup_bot_commands():
             types.BotCommand("help", "Как пользоваться ботом"),
         ])
     except Exception as e:
-        logger.error(f"Failed to set bot commands: {e}")
-
-
-def run_local():
-    bot.delete_webhook()
-    bot.infinity_polling(none_stop=True, timeout=60)
-
-
-@app.route("/" + TOKEN, methods=["POST"])
-def getMessage():
-    bot.process_new_updates([types.Update.de_json(request.stream.read().decode("utf-8"))])
-    return "!", 200
-
-
-@app.route("/")
-def webhook():
-    if not url:
-        return "WEBHOOK_URL is not set", 500
-    bot.remove_webhook()
-    bot.set_webhook(url=url + TOKEN)
-    return "!", 200
+        logger.error("Failed to set bot commands: %s", e)
 
 
 if __name__ == "__main__":
+    load_file_ids()
+    get_entries()  # прочитать таблицу сразу; если база ещё не поднялась — прочитается при первом запросе
     setup_bot_commands()
-    if POLLING_MODE:
-        run_local()
-    else:
-        app.run(threaded=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    bot.delete_webhook()
+    bot.infinity_polling(none_stop=True, timeout=60)

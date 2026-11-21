@@ -1,11 +1,15 @@
 [Unit]
 Description=Martirolog Telegram Bot
-After=network.target mysql.service
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 User=root
 WorkingDirectory=/opt/martirolog
 EnvironmentFile=/etc/martirolog/env
+Environment=PYTHONUNBUFFERED=1
+# /var/lib/martirolog — здесь бот хранит идентификаторы уже отправленных фото
+StateDirectory=martirolog
 ExecStart=/opt/martirolog/venv/bin/python app.py
 Restart=always
 RestartSec=5

@@ -164,3 +164,7 @@ cython_debug/
 #.idea/
 
 /CLAUDE.md
+
+# идентификаторы фото, которые бот запоминает при запуске из этой папки
+file_ids_*.json
+file_ids_*.json.tmp
